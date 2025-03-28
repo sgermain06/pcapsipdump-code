@@ -1,3 +1,13 @@
 .history/
 .vscode/
 .svn
+
+# Omit compiled binary
+pcapsipdump
+pcapsipdump-debug
+gmon.out
+
+make-checks/all
+make-checks/cxx
+make-checks/libpcap
+make-checks/libbsd
