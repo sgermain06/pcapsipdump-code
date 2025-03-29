@@ -47,25 +47,43 @@
 #include "pcapsipdump_lib.h"
 
 #ifndef MIN
-#define MIN(x,y) ((x) < (y) ? (x) : (y))
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
 #endif
 
 using namespace std;
 
 int get_sip_peername(char *data, int data_len, const char *tag, char *caller, int caller_len);
 int get_ip_port_from_sdp(const char *sdp, size_t sdplen, in_addr_t *addr, unsigned short *port);
-uint32_t get_ssrc (void *ip_packet_data, bool is_rtcp);
+uint32_t get_ssrc(void *ip_packet_data, bool is_rtcp);
 long long parse_size_string(char *s);
 char *trim_whitespace(char *str);
 vector<string> &split(const string &s, char delim, vector<string> &elems);
 vector<string> split(const string &s, char delim);
 #ifndef _GNU_SOURCE
-void *memmem(const void* haystack, size_t hl, const void* needle, size_t nl);
+void *memmem(const void *haystack, size_t hl, const void *needle, size_t nl);
 #endif
 
+int find_sip_header(const char *data, int data_len, const char *header, char *value, int value_len)
+{
+    unsigned long header_len;
+    const char *header_start = gettag(data, data_len, header, &header_len);
+
+    if (!header_start || header_len == 0)
+    {
+        return 1; // Header not found
+    }
+
+    // Copy the header value into the provided buffer
+    int copy_len = MIN(header_len, value_len - 1);
+    memcpy(value, header_start, copy_len);
+    value[copy_len] = '\0'; // Null-terminate the string
+
+    return 0; // Success
+}
+
 calltable *ct;
-int verbosity=0;
-int opt_t38only=0;
+int verbosity = 0;
+int opt_t38only = 0;
 
 void sigint_handler(int param)
 {
@@ -88,47 +106,56 @@ void sigterm_handler(int param)
 #define MAX_PCAP_FILTER_EXPRESSION 1024
 
 /* return 32-bit hash of source/dest IPv4 or IPv6 address based on IP header */
-uint32_t hsaddr(void *p) {
-    struct iphdr *header_ip = (iphdr*)p;
-    struct ipv6hdr *header_ipv6 = (ipv6hdr*)p;
-    if(header_ip->version == 4){
+uint32_t hsaddr(void *p)
+{
+    struct iphdr *header_ip = (iphdr *)p;
+    struct ipv6hdr *header_ipv6 = (ipv6hdr *)p;
+    if (header_ip->version == 4)
+    {
         return header_ip->saddr;
-    }else{
+    }
+    else
+    {
         // Ad-hoc 128bit -> 32bit hash function
-        return (uint32_t)(
-            (uint32_t)(header_ipv6->saddr[0])+
-            (uint32_t)(header_ipv6->saddr[1]*19)+
-            (uint32_t)(header_ipv6->saddr[2]*37)+
-            (uint32_t)(header_ipv6->saddr[3]*109));
+        return (uint32_t)((uint32_t)(header_ipv6->saddr[0]) +
+                          (uint32_t)(header_ipv6->saddr[1] * 19) +
+                          (uint32_t)(header_ipv6->saddr[2] * 37) +
+                          (uint32_t)(header_ipv6->saddr[3] * 109));
     }
 }
 
-uint32_t hdaddr(void *p) {
-    struct iphdr *header_ip = (iphdr*)p;
-    struct ipv6hdr *header_ipv6 = (ipv6hdr*)p;
-    if(header_ip->version == 4){
+uint32_t hdaddr(void *p)
+{
+    struct iphdr *header_ip = (iphdr *)p;
+    struct ipv6hdr *header_ipv6 = (ipv6hdr *)p;
+    if (header_ip->version == 4)
+    {
         return header_ip->daddr;
-    }else{
+    }
+    else
+    {
         // Ad-hoc 128bit -> 32bit hash function
-        return (uint32_t)(
-            (uint32_t)(header_ipv6->daddr[0])+
-            (uint32_t)(header_ipv6->daddr[1]*19)+
-            (uint32_t)(header_ipv6->daddr[2]*37)+
-            (uint32_t)(header_ipv6->daddr[3]*109));
+        return (uint32_t)((uint32_t)(header_ipv6->daddr[0]) +
+                          (uint32_t)(header_ipv6->daddr[1] * 19) +
+                          (uint32_t)(header_ipv6->daddr[2] * 37) +
+                          (uint32_t)(header_ipv6->daddr[3] * 109));
     }
 }
 
-bool get_method(const char *data, char *sip_method, size_t sip_method_size) {
+bool get_method(const char *data, char *sip_method, size_t sip_method_size)
+{
     char *p;
     memcpy(sip_method, data, sip_method_size - 1);
     sip_method[sip_method_size - 1] = ' ';
     p = strchr(sip_method, ' ');
-    if (p != NULL) {
-       *p = '\0';
-       for (char *c = sip_method; c < p; c++){
+    if (p != NULL)
+    {
+        *p = '\0';
+        for (char *c = sip_method; c < p; c++)
+        {
             if (!isupper(*c))
                 goto fail;
-       }
+        }
         return true;
     }
 fail:
@@ -140,20 +167,26 @@ int parse_sdp(const char *sdp, size_t sdplen, calltable_element *ce)
 {
     in_addr_t addr;
     unsigned short port;
-    if (! get_ip_port_from_sdp(sdp, sdplen, &addr, &port)){
+    if (!get_ip_port_from_sdp(sdp, sdplen, &addr, &port))
+    {
         ct->add_ip_port(ce, addr, port);
-    }else{
-        if (verbosity >= 2) {
+    }
+    else
+    {
+        if (verbosity >= 2)
+        {
             printf("Can't get ip/port from SDP:\n%s\n\n", sdp);
             return -1;
         }
     }
     unsigned char rtpmap_event = sdp_get_rtpmap_event(sdp);
-    if (rtpmap_event) {
+    if (rtpmap_event)
+    {
         ce->rtpmap_event = rtpmap_event;
     }
-    if (opt_t38only && memmem(sdp, sdplen, "udptl t38", 9)!=NULL){
-        ce->had_t38=1;
+    if (opt_t38only && memmem(sdp, sdplen, "udptl t38", 9) != NULL)
+    {
+        ce->had_t38 = 1;
     }
     return 0;
 }
@@ -161,580 +194,742 @@ int parse_sdp(const char *sdp, size_t sdplen, calltable_element *ce)
 int main(int argc, char *argv[])
 {
 
-    pcap_t *handle;/* Session handle */
+    pcap_t *handle; /* Session handle */
     // directory/filename template, where .pcap files are written
     char *opt_fntemplate;
-    char *ifname;/* interface to sniff on */
-    char *fname;/* pcap file to read on */
-    char *opt_ipfilter = NULL; /* pcap IP address to lookup in layer-3 */
-    char errbuf[PCAP_ERRBUF_SIZE];/* Error string */
-    struct bpf_program fp;/* The compiled filter */
+    char *ifname;                             /* interface to sniff on */
+    char *fname;                              /* pcap file to read on */
+    char *opt_ipfilter = NULL;                /* pcap IP address to lookup in layer-3 */
+    const char *opt_sip_header_filter = NULL; // SIP header filter
+    char errbuf[PCAP_ERRBUF_SIZE];            /* Error string */
+    struct bpf_program fp;                    /* The compiled filter */
     char filter_exp[MAX_PCAP_FILTER_EXPRESSION] = "";
     struct pcap_pkthdr *pkt_header; /* The header that pcap gives us */
-    const u_char *pkt_data; /* The actual packet */
-    unsigned long last_cleanup=0;
+    const u_char *pkt_data;         /* The actual packet */
+    unsigned long last_cleanup = 0;
     int res;
-    int offset_to_ip=0;
-    int opt_fork=1;
-    int opt_promisc=1;
-    int opt_packetbuffered=0;
-    int opt_rtpsave=RTPSAVE_RTP_RTCP;
-    int opt_call_skip_n=1; /* By default, record every first call, i.e. record all */
-    int call_skip_cnt=1;
-    int opt_pcap_buffer_size=0; /* Operating system capture buffer size, a.k.a. libpcap ring buffer size */
+    int offset_to_ip = 0;
+    int opt_fork = 1;
+    int opt_promisc = 1;
+    int opt_packetbuffered = 0;
+    int opt_rtpsave = RTPSAVE_RTP_RTCP;
+    int opt_call_skip_n = 1; /* By default, record every first call, i.e. record all */
+    int call_skip_cnt = 1;
+    int opt_pcap_buffer_size = 0; /* Operating system capture buffer size, a.k.a. libpcap ring buffer size */
     int opt_absolute_timeout = INT32_MAX;
-    bool number_filter_matched=false;
-    bool number_filter_in_use=false;
+    bool number_filter_matched = false;
+    bool number_filter_in_use = false;
     regex_t number_filter, method_filter;
     regmatch_t pmatch[1];
-    const char *pid_file="/var/run/pcapsipdump.pid";
+    const char *pid_file = "/var/run/pcapsipdump.pid";
 
-    if ((int)getuid()){
+    if ((int)getuid())
+    {
         struct passwd *pw = getpwuid(getuid());
         opt_fntemplate = (char *)malloc(512);
         strncpy(opt_fntemplate, pw->pw_dir, 512);
-        strncat(opt_fntemplate, "/.var/spool/pcapsipdump/%Y%m%d/%H/%Y%m%d-%H%M%S-%f-%t-%i.pcap", 512-62-1);
-    }else{
+        strncat(opt_fntemplate, "/.var/spool/pcapsipdump/%Y%m%d/%H/%Y%m%d-%H%M%S-%f-%t-%i.pcap", 512 - 62 - 1);
+    }
+    else
+    {
         opt_fntemplate = (char *)"/var/spool/pcapsipdump/%Y%m%d/%H/%Y%m%d-%H%M%S-%f-%t-%i.pcap";
     }
-    ifname=NULL;
-    fname=NULL;
+    ifname = NULL;
+    fname = NULL;
     regcomp(&method_filter, "^(INVITE|OPTIONS|REGISTER)$", REG_EXTENDED);
     trigger.init();
 
-    while(1) {
+    while (1)
+    {
         signed char c;
 
-        c = getopt (argc, argv, "i:r:d:v:m:n:R:l:B:T:t:I:P:fpU");
+        c = getopt(argc, argv, "i:r:d:v:m:n:R:l:B:T:t:I:H:P:fpU");
         if (c == -1)
             break;
 
-        switch (c) {
-            case 'i':
-                ifname=optarg;
-                break;
-            case 'v':
-                verbosity = atoi(optarg);
-                trigger.verbosity = verbosity;
-                break;
-            case 'm':
-                regfree(&method_filter);
-                regcomp(&method_filter, optarg, REG_EXTENDED);
-                break;
-            case 'n':
-                regcomp(&number_filter, optarg, REG_EXTENDED);
-                number_filter_in_use = true;
-                break;
-            case 'R':
-                if (strcasecmp(optarg,"none")==0){
-                    opt_rtpsave=RTPSAVE_NONE;
-                }else if (strcasecmp(optarg,"rtpevent")==0){
-                    opt_rtpsave=RTPSAVE_RTPEVENT;
-                }else if (strcasecmp(optarg,"t38")==0){
-                    opt_t38only=1;
-                }else if (strcasecmp(optarg,"all")==0 ||
-                          strcasecmp(optarg,"rtp+rtcp")==0){
-                    opt_rtpsave=RTPSAVE_RTP_RTCP;
-                }else if (strcasecmp(optarg,"rtp")==0){
-                    opt_rtpsave=RTPSAVE_RTP;
-                }else{
-                    printf("Unrecognized RTP filter specification: '%s'\n",optarg);
-                    return 1;
-                }
-                break;
-            case 'l':
-                opt_call_skip_n=atoi(optarg);
-                if (opt_call_skip_n<1){
-                    fprintf(stderr, "Invalid option '-l %s'. Argument should be positive integer.\n", optarg);
-                    return(1);
-                }
-                break;
-            case 'B':
-                opt_pcap_buffer_size = parse_size_string(optarg);
-                if (opt_pcap_buffer_size < 1){
-                    fprintf(stderr, "Invalid option '-B %s'.\n"
-                                    "  Argument should be positive integer with optional quantifier.\n"
-                                    "  e.g.: '-B 32768' or '-B 10KB' or '-b 512MiB', etc.\n", optarg);
-                    return(1);
-                }
-                break;
-            case 'r':
-                fname=optarg;
-                break;
-            case 'd':
-                opt_fntemplate = optarg;
-                break;
-            case 'f':
-                opt_fork=0;
-                break;
-            case 'p':
-                opt_promisc=0;
-                break;
-            case 'U':
-                opt_packetbuffered=1;
-                break;
-            case 'I':
-                opt_ipfilter = optarg;
-                break;
-            case 'T':
-                opt_absolute_timeout = atol(optarg);
-                break;
-            case 't':
-                trigger.add(optarg);
-                break;
-            case 'P':
-                pid_file = optarg;
-                break;
+        switch (c)
+        {
+        case 'i':
+            ifname = optarg;
+            break;
+        case 'v':
+            verbosity = atoi(optarg);
+            trigger.verbosity = verbosity;
+            break;
+        case 'm':
+            regfree(&method_filter);
+            regcomp(&method_filter, optarg, REG_EXTENDED);
+            break;
+        case 'n':
+            regcomp(&number_filter, optarg, REG_EXTENDED);
+            number_filter_in_use = true;
+            break;
+        case 'R':
+            if (strcasecmp(optarg, "none") == 0)
+            {
+                opt_rtpsave = RTPSAVE_NONE;
+            }
+            else if (strcasecmp(optarg, "rtpevent") == 0)
+            {
+                opt_rtpsave = RTPSAVE_RTPEVENT;
+            }
+            else if (strcasecmp(optarg, "t38") == 0)
+            {
+                opt_t38only = 1;
+            }
+            else if (strcasecmp(optarg, "all") == 0 ||
+                     strcasecmp(optarg, "rtp+rtcp") == 0)
+            {
+                opt_rtpsave = RTPSAVE_RTP_RTCP;
+            }
+            else if (strcasecmp(optarg, "rtp") == 0)
+            {
+                opt_rtpsave = RTPSAVE_RTP;
+            }
+            else
+            {
+                printf("Unrecognized RTP filter specification: '%s'\n", optarg);
+                return 1;
+            }
+            break;
+        case 'l':
+            opt_call_skip_n = atoi(optarg);
+            if (opt_call_skip_n < 1)
+            {
+                fprintf(stderr, "Invalid option '-l %s'. Argument should be positive integer.\n", optarg);
+                return (1);
+            }
+            break;
+        case 'B':
+            opt_pcap_buffer_size = parse_size_string(optarg);
+            if (opt_pcap_buffer_size < 1)
+            {
+                fprintf(stderr, "Invalid option '-B %s'.\n"
+                                "  Argument should be positive integer with optional quantifier.\n"
+                                "  e.g.: '-B 32768' or '-B 10KB' or '-b 512MiB', etc.\n",
+                        optarg);
+                return (1);
+            }
+            break;
+        case 'r':
+            fname = optarg;
+            break;
+        case 'd':
+            opt_fntemplate = optarg;
+            break;
+        case 'f':
+            opt_fork = 0;
+            break;
+        case 'p':
+            opt_promisc = 0;
+            break;
+        case 'U':
+            opt_packetbuffered = 1;
+            break;
+        case 'I':
+            opt_ipfilter = optarg;
+            break;
+        case 'T':
+            opt_absolute_timeout = atol(optarg);
+            break;
+        case 't':
+            trigger.add(optarg);
+            break;
+        case 'P':
+            pid_file = optarg;
+            break;
+        case 'H':
+            opt_sip_header_filter = optarg;
+            break;
         }
     }
 
     // everything that is left unparsed in argument string is pcap filter expression
-    if (optind < argc) {
-        filter_exp[0]='\0';
-        while (optind < argc) {
-            if (filter_exp[0]!='\0'){
-                strcat(filter_exp," ");
+    if (optind < argc)
+    {
+        filter_exp[0] = '\0';
+        while (optind < argc)
+        {
+            if (filter_exp[0] != '\0')
+            {
+                strcat(filter_exp, " ");
             }
-            strcat(filter_exp,argv[optind++]);
+            strcat(filter_exp, argv[optind++]);
         }
     }
 
-    if ((fname==NULL)&&(ifname==NULL)){
-	printf( "pcapsipdump version %s\n"
-		"Usage: pcapsipdump [-fpU] [-i interface | -r file] [-d output_directory] [-P pid_file]\n"
-                "                   [-v level] [-R filter] [-m filter] [-n filter] [-l filter]\n"
-                "                   [-B size] [-T limit] [-t trigger:action:param] [expression]\n"
-		" -f   Do not fork or detach from controlling terminal.\n"
-		" -P   When forking, save PID to this file (default /var/run/pcapsipdump.pid).\n"
-		" -p   Do not put the interface into promiscuous mode.\n"
-		" -U   Make .pcap files writing 'packet-buffered' - slower method,\n"
-		"      but you can use partitially written file anytime, it will be consistent.\n"
-		" -i   Specify network interface name (i.e. eth0, em1, ppp0, etc).\n"
-		" -r   Read from .pcap file instead of network interface.\n"
-		" -v   Set verbosity level (higher is more verbose).\n"
-		" -B   Set the operating system capture buffer size, a.k.a. ring buffer size.\n"
-		"      This can be expressed in bytes/KB(*1000)/KiB(*1024)/MB/MiB/GB/GiB. ex.: '-B 64MiB'\n"
-		"      Set this to few MiB or more to avoid packets dropped by kernel.\n"
-		" -R   RTP filter. Specifies what kind of RTP information to include in capture:\n"
-		"      'rtp+rtcp' (default), 'rtp', 'rtpevent', 't38', or 'none'.\n"
-		" -I   IP filter. This will lookup for a specific IP address on layer-3 to match either\n"
-        "      source or destination.\n"
-        "      This can be a comma-separated list, i.e.:\n"
-        "      -I 10.0.0.1,205.151.222.250\n"
-        " -m   Method-filter. Default is '^(INVITE|OPTIONS|REGISTER)$'\n"
-		" -n   Number-filter. Only calls to/from specified number will be recorded\n"
-		"      Argument is a regular expression. See 'man 7 regex' for details.\n"
-                " -l   Record only each N-th call (i.e. '-l 3' = record only each third call)\n"
-                " -d   Set directory (or filename template), where captured files will be stored.\n"
-                "      ex.: -d /var/spool/pcapsipdump/%%Y%%m%%d/%%H/%%Y%%m%%d-%%H%%M%%S-%%f-%%t-%%i.pcap\n"
-                " -T   Unconditionally stop recording a call after it was active for this many seconds.\n"
-                "      Might be useful for broken peers that keep sending RTP long after call ended.\n"
-                " -t   <trigger>:<action>:<parameter>. Parameter is %%-expanded (see below)\n"
-                "      Triggers: open = when opening a new .pcap file; close = when closing\n"
-                "      Actions and their parameters:\n"
-                "      mv:<directory> - move .pcap files to <directory> (using /bin/mv)\n"
-                "      exec:\"/bin/blah args...\" - fork and execute /bin/blah with arguments\n"
-                "      sh:\"shell code\" - fork and execute /bin/sh -c \"shell code\"\n"
-                " *    Following %%-codes are expanded in -d and -t: %%f (from/caller), %%t (to/callee),\n"
-                "      %%i (call-id), and call date/time (see 'man 3 strftime' for details)\n"
-                " *    Trailing argument is pcap filter expression syntax, see 'man 7 pcap-filter'\n"
-                , PCAPSIPDUMP_VERSION);
-	return 1;
+    if ((fname == NULL) && (ifname == NULL))
+    {
+        printf("pcapsipdump version %s\n"
+               "Usage: pcapsipdump [-fpU] [-i interface | -r file] [-d output_directory] [-P pid_file]\n"
+               "                   [-v level] [-R filter] [-m filter] [-n filter] [-l filter]\n"
+               "                   [-B size] [-T limit] [-t trigger:action:param] [expression]\n"
+               " -f   Do not fork or detach from controlling terminal.\n"
+               " -P   When forking, save PID to this file (default /var/run/pcapsipdump.pid).\n"
+               " -p   Do not put the interface into promiscuous mode.\n"
+               " -U   Make .pcap files writing 'packet-buffered' - slower method,\n"
+               "      but you can use partitially written file anytime, it will be consistent.\n"
+               " -i   Specify network interface name (i.e. eth0, em1, ppp0, etc).\n"
+               " -r   Read from .pcap file instead of network interface.\n"
+               " -v   Set verbosity level (higher is more verbose).\n"
+               " -B   Set the operating system capture buffer size, a.k.a. ring buffer size.\n"
+               "      This can be expressed in bytes/KB(*1000)/KiB(*1024)/MB/MiB/GB/GiB. ex.: '-B 64MiB'\n"
+               "      Set this to few MiB or more to avoid packets dropped by kernel.\n"
+               " -R   RTP filter. Specifies what kind of RTP information to include in capture:\n"
+               "      'rtp+rtcp' (default), 'rtp', 'rtpevent', 't38', or 'none'.\n"
+               " -I   IP-filter. This will lookup for a specific IP address on layer-3 to match either\n"
+               "      source or destination.\n"
+               "      This can be a comma-separated list, i.e.:\n"
+               "      -I 10.0.0.1,205.151.222.250\n"
+               " -H   Header-filter. This will lookup for a specific SIP Header to match for capture.\n"
+               " -m   Method-filter. Default is '^(INVITE|OPTIONS|REGISTER)$'\n"
+               " -n   Number-filter. Only calls to/from specified number will be recorded\n"
+               "      Argument is a regular expression. See 'man 7 regex' for details.\n"
+               " -l   Record only each N-th call (i.e. '-l 3' = record only each third call)\n"
+               " -d   Set directory (or filename template), where captured files will be stored.\n"
+               "      ex.: -d /var/spool/pcapsipdump/%%Y%%m%%d/%%H/%%Y%%m%%d-%%H%%M%%S-%%f-%%t-%%i.pcap\n"
+               " -T   Unconditionally stop recording a call after it was active for this many seconds.\n"
+               "      Might be useful for broken peers that keep sending RTP long after call ended.\n"
+               " -t   <trigger>:<action>:<parameter>. Parameter is %%-expanded (see below)\n"
+               "      Triggers: open = when opening a new .pcap file; close = when closing\n"
+               "      Actions and their parameters:\n"
+               "      mv:<directory> - move .pcap files to <directory> (using /bin/mv)\n"
+               "      exec:\"/bin/blah args...\" - fork and execute /bin/blah with arguments\n"
+               "      sh:\"shell code\" - fork and execute /bin/sh -c \"shell code\"\n"
+               " *    Following %%-codes are expanded in -d and -t: %%f (from/caller), %%t (to/callee),\n"
+               "      %%i (call-id), and call date/time (see 'man 3 strftime' for details)\n"
+               " *    Trailing argument is pcap filter expression syntax, see 'man 7 pcap-filter'\n",
+               PCAPSIPDUMP_VERSION);
+        return 1;
     }
 
-    if ((res = opts_sanity_check_d(&opt_fntemplate)) != 0) return res;
+    if ((res = opts_sanity_check_d(&opt_fntemplate)) != 0)
+        return res;
     ct = new calltable;
     ct->opt_absolute_timeout = opt_absolute_timeout;
-    if (opt_t38only){
-        ct->erase_non_t38=1;
+    if (opt_t38only)
+    {
+        ct->erase_non_t38 = 1;
     }
-    signal(SIGINT,sigint_handler);
-    signal(SIGTERM,sigterm_handler);
+    signal(SIGINT, sigint_handler);
+    signal(SIGTERM, sigterm_handler);
 
-    if (verbosity>=3){
-        printf("Using pcap filter: '%s'\n",filter_exp);
+    if (verbosity >= 3)
+    {
+        printf("Using pcap filter: '%s'\n", filter_exp);
     }
 
-    if (ifname){
-        handle = pcap_create(ifname,errbuf);
-        if (handle == NULL){
+    if (ifname)
+    {
+        handle = pcap_create(ifname, errbuf);
+        if (handle == NULL)
+        {
             fprintf(stderr, "Couldn't open interface '%s': pcap_create(): %s\n", ifname, errbuf);
-            return(2);
+            return (2);
         }
-        if (pcap_set_snaplen(handle, 9000)){
+        if (pcap_set_snaplen(handle, 9000))
+        {
             fprintf(stderr, "Couldn't open interface '%s': pcap_set_snaplen(9000): %s\n", ifname, pcap_geterr(handle));
-            return(2);
+            return (2);
         }
-        if (pcap_set_promisc(handle, opt_promisc)){
+        if (pcap_set_promisc(handle, opt_promisc))
+        {
             fprintf(stderr, "Couldn't open interface '%s': pcap_set_promisc(opt_promisc): %s\n", ifname, pcap_geterr(handle));
-            return(2);
+            return (2);
         }
-        if (pcap_set_timeout(handle, 1000)){
+        if (pcap_set_timeout(handle, 1000))
+        {
             fprintf(stderr, "Couldn't open interface '%s': pcap_set_timeout(1000):) %s\n", ifname, pcap_geterr(handle));
-            return(2);
+            return (2);
         }
         printf("Capturing on interface: %s\n", ifname);
 
-        if (opt_ipfilter != NULL) {
+        if (opt_ipfilter != NULL)
+        {
             printf("Filtering on IP address: %s\n", opt_ipfilter);
         }
 
-        if (opt_pcap_buffer_size > 0){
+        if (opt_pcap_buffer_size > 0)
+        {
             /* setting pcap_set_buffer_size to bigger values helps to deal with packet drops under high load
                libpcap > 1.0.0 if required for pcap_set_buffer_size
                for libpcap < 1.0.0 instead, this should be controled by /proc/sys/net/core/rmem_default
             */
-            if(pcap_set_buffer_size(handle, opt_pcap_buffer_size)){
+            if (pcap_set_buffer_size(handle, opt_pcap_buffer_size))
+            {
                 fprintf(stderr, "Couldn't open interface '%s': pcap_set_buffer_size(): %s\n", ifname, pcap_geterr(handle));
-                return(2);
+                return (2);
             }
         }
-        if(pcap_activate(handle)){
+        if (pcap_activate(handle))
+        {
             fprintf(stderr, "Couldn't open interface '%s': pcap_activate(): %s\n", ifname, pcap_geterr(handle));
-            return(2);
+            return (2);
         }
-    }else{
+    }
+    else
+    {
         printf("Reading file: %s\n", fname);
         handle = pcap_open_offline(fname, errbuf);
-        if (handle == NULL) {
+        if (handle == NULL)
+        {
             fprintf(stderr, "Couldn't open pcap file '%s': %s\n", fname, errbuf);
-            return(2);
+            return (2);
         }
     }
 
     /* Compile and apply the filter */
-    if (pcap_compile(handle, &fp, filter_exp, 0, PCAP_NETMASK_UNKNOWN) == -1) {
+    if (pcap_compile(handle, &fp, filter_exp, 0, PCAP_NETMASK_UNKNOWN) == -1)
+    {
         fprintf(stderr, "Couldn't parse filter '%s': %s\n", filter_exp, pcap_geterr(handle));
-        return(2);
+        return (2);
     }
-    if (pcap_setfilter(handle, &fp) == -1) {
+    if (pcap_setfilter(handle, &fp) == -1)
+    {
         fprintf(stderr, "Couldn't install filter '%s': %s\n", filter_exp, pcap_geterr(handle));
-        return(2);
+        return (2);
     }
 
     {
-	int dlt=pcap_datalink(handle);
-	switch (dlt){
-	    case DLT_EN10MB :
-		offset_to_ip=sizeof(struct ether_header);
-		break;
-	    case DLT_LINUX_SLL :
-		offset_to_ip=16;
-		break;
-	    case DLT_RAW :
-		offset_to_ip=0;
-		break;
-	    default : {
-		fprintf(stderr, "Unknown interface type (%d).\n", dlt);
-		return 3;
-	    }
-	}
+        int dlt = pcap_datalink(handle);
+        switch (dlt)
+        {
+        case DLT_EN10MB:
+            offset_to_ip = sizeof(struct ether_header);
+            break;
+        case DLT_LINUX_SLL:
+            offset_to_ip = 16;
+            break;
+        case DLT_RAW:
+            offset_to_ip = 0;
+            break;
+        default:
+        {
+            fprintf(stderr, "Unknown interface type (%d).\n", dlt);
+            return 3;
+        }
+        }
     }
 
-    if (opt_fork){
+    if (opt_fork)
+    {
         // daemonize
 
         pid_t pid = fork();
-        if (pid) {
-             FILE *fp = fopen(pid_file, "w");
-             if (fp) {
-                 fprintf(fp, "%d\n", pid);
-                 fclose(fp);
-                 exit(0);
-             }else{
-                 fprintf(stderr, "Can't write PID %d to file %s\n",
-                         pid, pid_file);
-                 return(2);
-             }
+        if (pid)
+        {
+            FILE *fp = fopen(pid_file, "w");
+            if (fp)
+            {
+                fprintf(fp, "%d\n", pid);
+                fclose(fp);
+                exit(0);
+            }
+            else
+            {
+                fprintf(stderr, "Can't write PID %d to file %s\n",
+                        pid, pid_file);
+                return (2);
+            }
         }
     }
 
     /* Retrieve the packets */
-    while((res = pcap_next_ex( handle, &pkt_header, &pkt_data)) >= 0){
-	{
-	    struct iphdr *header_ip;
-	    struct ipv6hdr *header_ipv6;
-	    char *data;
-	    const char *s;
-	    unsigned long datalen;
-	    unsigned long l;
-	    int idx=-1;
+    while ((res = pcap_next_ex(handle, &pkt_header, &pkt_data)) >= 0)
+    {
+        {
+            struct iphdr *header_ip;
+            struct ipv6hdr *header_ipv6;
+            char *data;
+            const char *s;
+            unsigned long datalen;
+            unsigned long l;
+            int idx = -1;
 
-        char sip_method[10] = "";
+            char sip_method[10] = "";
 
-        if(res == 0)
-            /* Timeout elapsed */
-            continue;
+            if (res == 0)
+                /* Timeout elapsed */
+                continue;
 
-	    if (pkt_header->ts.tv_sec-last_cleanup>15) {
-            ct->do_cleanup(pkt_header->ts.tv_sec);
-            last_cleanup=pkt_header->ts.tv_sec;
-	    }
-
-            if (offset_to_ip == sizeof(struct ether_header)) {
-                header_ip = ethernet_get_header_ip(pkt_data);
-            }else{
-                header_ip = (iphdr *)((char*)pkt_data + offset_to_ip);
+            if (pkt_header->ts.tv_sec - last_cleanup > 15)
+            {
+                ct->do_cleanup(pkt_header->ts.tv_sec);
+                last_cleanup = pkt_header->ts.tv_sec;
             }
-            if(!header_ip){
+
+            if (offset_to_ip == sizeof(struct ether_header))
+            {
+                header_ip = ethernet_get_header_ip(pkt_data);
+            }
+            else
+            {
+                header_ip = (iphdr *)((char *)pkt_data + offset_to_ip);
+            }
+            if (!header_ip)
+            {
                 continue;
             }
-            header_ip=skip_tunnel_ip_header(header_ip);
+            header_ip = skip_tunnel_ip_header(header_ip);
 
-        /* IP filtering */
-        if (opt_ipfilter != NULL) {
+            /* IP and SIP header filtering */
+            if (opt_ipfilter != NULL || opt_sip_header_filter != NULL)
+            {
+                bool ip_filter_matched = false;
+                bool sip_header_matched = false;
 
-            char s_ip[16], d_ip[16];
-            struct in_addr in;
+                // IP filtering logic
+                if (opt_ipfilter != NULL)
+                {
+                    char s_ip[16], d_ip[16];
+                    struct in_addr in;
 
-            in.s_addr = header_ip->saddr;
-            strcpy(s_ip, inet_ntoa(in));
-            in.s_addr = header_ip->daddr;
-            strcpy(d_ip, inet_ntoa(in));
+                    // Extract source and destination IP addresses
+                    in.s_addr = header_ip->saddr;
+                    strcpy(s_ip, inet_ntoa(in));
+                    in.s_addr = header_ip->daddr;
+                    strcpy(d_ip, inet_ntoa(in));
 
-            vector<string> ip_addresses = split(opt_ipfilter, ',');
-            bool found = false;
+                    // Split the opt_ipfilter string into individual IP addresses
+                    vector<string> ip_addresses = split(opt_ipfilter, ',');
+                    for (vector<string>::size_type i = 0; i != ip_addresses.size(); i++)
+                    {
+                        string ip = ip_addresses[i];
+                        if (strcmp(s_ip, trim_whitespace((char *)ip.c_str())) == 0 ||
+                            strcmp(d_ip, trim_whitespace((char *)ip.c_str())) == 0)
+                        {
+                            ip_filter_matched = true;
+                            break;
+                        }
+                    }
+                }
 
-            for (vector<string>::size_type i = 0; i != ip_addresses.size(); i++) {
-                string ip = ip_addresses[i];
-                if (strcmp(s_ip, trim_whitespace((char *)ip.c_str())) == 0 ||
-                    strcmp(d_ip, trim_whitespace((char *)ip.c_str())) == 0) {
-                    found = true;
-                    break;
+                // SIP header filtering logic
+                if (opt_sip_header_filter != NULL && data != NULL)
+                {
+                    char header_value[256] = ""; // Buffer to store the header value
+
+                    if (find_sip_header(data, datalen, opt_sip_header_filter, header_value, sizeof(header_value)) == 0)
+                    {
+                        printf("Found SIP Header: %s -> %s\n", opt_sip_header_filter, header_value);
+                        sip_header_matched = true;
+                    }
+                }
+
+                // If neither IP filter nor SIP header filter matched, check for active calls
+                if (!ip_filter_matched && !sip_header_matched)
+                {
+                    calltable_element *ce = NULL;
+                    int idx_rtp = 0;
+                    uint16_t rtp_port_mask = 0xffff;
+                    struct udphdr *header_udp = (udphdr *)((char *)header_ip +
+                                                           ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr)));
+
+                    // Check if the packet matches an active call in the call table
+                    if (!ct->find_ip_port_ssrc(
+                            hdaddr(header_ip), htons(header_udp->dest) & rtp_port_mask,
+                            get_ssrc((char *)header_udp + sizeof(*header_udp), false),
+                            &ce, &idx_rtp) &&
+                        !ct->find_ip_port_ssrc(
+                            hsaddr(header_ip), htons(header_udp->source) & rtp_port_mask,
+                            get_ssrc((char *)header_udp + sizeof(*header_udp), false),
+                            &ce, &idx_rtp))
+                    {
+                        // Skip the packet if it doesn't match IP filter, SIP header filter, or active calls
+                        continue;
+                    }
                 }
             }
 
-            if (!found) {
-                continue;
-            }
-        }
-
-
-            header_ipv6=(ipv6hdr *)header_ip;
-            if (header_ip->version == 4 && (header_ip->frag_off & htons(0x1fff)) > 0) { // fragment offset > 0
+            header_ipv6 = (ipv6hdr *)header_ip;
+            if (header_ip->version == 4 && (header_ip->frag_off & htons(0x1fff)) > 0)
+            { // fragment offset > 0
                 struct addr_addr_id aai = (struct addr_addr_id){header_ip->saddr,
-                                                               header_ip->daddr,
-                                                               header_ip->id};
+                                                                header_ip->daddr,
+                                                                header_ip->id};
                 pcap_dumper_t *f = ct->get_ipfrag(aai);
-                if (f) {
-                    pcap_dump((u_char *)f,pkt_header,pkt_data);
-                    if (opt_packetbuffered) {pcap_dump_flush(f);}
-                    if ((header_ip->frag_off & htons(0x2000)) == 0 ) { // more_fragments == 0
+                if (f)
+                {
+                    pcap_dump((u_char *)f, pkt_header, pkt_data);
+                    if (opt_packetbuffered)
+                    {
+                        pcap_dump_flush(f);
+                    }
+                    if ((header_ip->frag_off & htons(0x2000)) == 0)
+                    { // more_fragments == 0
                         ct->delete_ipfrag(aai);
                     }
                 }
-            } else if (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_FRAGMENT &&
-                    ((char*)header_ipv6)[40] == IPPROTO_UDP &&
-                    (htons(((uint16_t*)header_ipv6)[21]) & 0xffff8) > 0 // fragment offset
-                    ){
-                struct ipv6fraghdr *frag = (ipv6fraghdr*)(((char*)header_ipv6)+sizeof(*header_ipv6));
-                if (frag->nexthdr == IPPROTO_UDP){
+            }
+            else if (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_FRAGMENT &&
+                     ((char *)header_ipv6)[40] == IPPROTO_UDP &&
+                     (htons(((uint16_t *)header_ipv6)[21]) & 0xffff8) > 0 // fragment offset
+            )
+            {
+                struct ipv6fraghdr *frag = (ipv6fraghdr *)(((char *)header_ipv6) + sizeof(*header_ipv6));
+                if (frag->nexthdr == IPPROTO_UDP)
+                {
                     struct addr_addr_id aai = (struct addr_addr_id){hsaddr(header_ipv6),
-                                                                   hdaddr(header_ipv6),
-                                                                   (uint16_t)frag->id};
+                                                                    hdaddr(header_ipv6),
+                                                                    (uint16_t)frag->id};
                     pcap_dumper_t *f = ct->get_ipfrag(aai);
-                    if (f) {
-                        pcap_dump((u_char *)f,pkt_header,pkt_data);
-                        if (opt_packetbuffered) {pcap_dump_flush(f);}
-                        if ((htons(frag->offset_and_more) & 1) == 0){
+                    if (f)
+                    {
+                        pcap_dump((u_char *)f, pkt_header, pkt_data);
+                        if (opt_packetbuffered)
+                        {
+                            pcap_dump_flush(f);
+                        }
+                        if ((htons(frag->offset_and_more) & 1) == 0)
+                        {
                             ct->delete_ipfrag(aai);
                         }
                     }
                 }
-            } else if ( /* sane IPv4 UDP */
-                 (header_ip->version == 4 && pkt_header->caplen >=
-                   (offset_to_ip+sizeof(struct iphdr)+sizeof(struct udphdr)) &&
-                   header_ip->protocol == IPPROTO_UDP)
-                 /* sane IPv6 UDP */ ||
-                 (header_ipv6->version == 6 && pkt_header->caplen >=
-                   (offset_to_ip+sizeof(struct ipv6hdr)+sizeof(struct udphdr)) &&
-                   header_ipv6->nexthdr == IPPROTO_UDP)
-                 /* fragmented IPv6 UDP */ ||
-                 (header_ipv6->version == 6 && pkt_header->caplen >=
-                   (offset_to_ip+sizeof(struct ipv6hdr)+sizeof(struct udphdr)) &&
-                   header_ipv6->nexthdr == IPPROTO_FRAGMENT &&
-                   ((char*)header_ipv6)[40] == IPPROTO_UDP)
+            }
+            else if (/* sane IPv4 UDP */
+                     (header_ip->version == 4 && pkt_header->caplen >= (offset_to_ip + sizeof(struct iphdr) + sizeof(struct udphdr)) &&
+                      header_ip->protocol == IPPROTO_UDP)
+                     /* sane IPv6 UDP */
+                     ||
+                     (header_ipv6->version == 6 && pkt_header->caplen >= (offset_to_ip + sizeof(struct ipv6hdr) + sizeof(struct udphdr)) &&
+                      header_ipv6->nexthdr == IPPROTO_UDP)
+                     /* fragmented IPv6 UDP */
+                     ||
+                     (header_ipv6->version == 6 && pkt_header->caplen >= (offset_to_ip + sizeof(struct ipv6hdr) + sizeof(struct udphdr)) &&
+                      header_ipv6->nexthdr == IPPROTO_FRAGMENT &&
+                      ((char *)header_ipv6)[40] == IPPROTO_UDP)
 #ifdef USE_TCP
-                 /* sane IPv4 TCP */ ||
-                 (header_ip->version == 4 && pkt_header->caplen >=
-                   (offset_to_ip+sizeof(struct iphdr)+sizeof(struct tcphdr)) &&
-                   header_ip->protocol == IPPROTO_TCP)
-                 /* sane IPv6 TCP */ ||
-                 (header_ipv6->version == 6 && pkt_header->caplen >=
-                   (offset_to_ip+sizeof(struct ipv6hdr)+sizeof(struct tcphdr)) &&
-                   header_ip->protocol == IPPROTO_TCP)
+                     /* sane IPv4 TCP */
+                     ||
+                     (header_ip->version == 4 && pkt_header->caplen >= (offset_to_ip + sizeof(struct iphdr) + sizeof(struct tcphdr)) &&
+                      header_ip->protocol == IPPROTO_TCP)
+                     /* sane IPv6 TCP */
+                     ||
+                     (header_ipv6->version == 6 && pkt_header->caplen >= (offset_to_ip + sizeof(struct ipv6hdr) + sizeof(struct tcphdr)) &&
+                      header_ip->protocol == IPPROTO_TCP)
 #endif
-                 ){
-                calltable_element *ce=NULL;
-                int idx_rtp=0;
-                int save_this_rtp_packet=0;
-                int is_rtcp=0;
-                uint16_t rtp_port_mask=0xffff;
+            )
+            {
+                calltable_element *ce = NULL;
+                int idx_rtp = 0;
+                int save_this_rtp_packet = 0;
+                int is_rtcp = 0;
+                uint16_t rtp_port_mask = 0xffff;
                 struct udphdr *header_udp;
                 struct tcphdr *tcph;
 
                 int extra_len = (header_ipv6->version == 6 && header_ipv6->nexthdr == IPPROTO_FRAGMENT) ? 8 : 0;
-                tcph=(tcphdr *)((char*)header_ip+
-                    ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr))+extra_len);
-                header_udp=(udphdr *)((char*)header_ip+
-                    ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr))+extra_len);
+                tcph = (tcphdr *)((char *)header_ip +
+                                  ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr)) + extra_len);
+                header_udp = (udphdr *)((char *)header_ip +
+                                        ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr)) + extra_len);
                 if ((header_ip->version == 4 && header_ip->protocol == IPPROTO_UDP) ||
                     (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_UDP) ||
                     (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_FRAGMENT &&
-                     ((char*)header_ipv6)[40] == IPPROTO_UDP)
-                    ) {
-                    data=(char *)header_udp+sizeof(*header_udp);
-                }else{
-                    data=(char *)((unsigned char *)tcph + (tcph->doff * 4));
+                     ((char *)header_ipv6)[40] == IPPROTO_UDP))
+                {
+                    data = (char *)header_udp + sizeof(*header_udp);
                 }
-                datalen=MIN(pkt_header->len, pkt_header->caplen) -
-                        ((unsigned long)data-(unsigned long)pkt_data);
+                else
+                {
+                    data = (char *)((unsigned char *)tcph + (tcph->doff * 4));
+                }
+                datalen = MIN(pkt_header->len, pkt_header->caplen) -
+                          ((unsigned long)data - (unsigned long)pkt_data);
 
-                if (opt_rtpsave == RTPSAVE_RTP || opt_rtpsave == RTPSAVE_RTPEVENT){
-                    save_this_rtp_packet=1;
-                }else if (opt_rtpsave==RTPSAVE_RTP_RTCP){
-                    save_this_rtp_packet=1;
-                    rtp_port_mask=0xfffe;
-                    is_rtcp=(htons(header_udp->source) & 1) && (htons(header_udp->dest) & 1);
-                }else{
-                    save_this_rtp_packet=0;
+                if (opt_rtpsave == RTPSAVE_RTP || opt_rtpsave == RTPSAVE_RTPEVENT)
+                {
+                    save_this_rtp_packet = 1;
+                }
+                else if (opt_rtpsave == RTPSAVE_RTP_RTCP)
+                {
+                    save_this_rtp_packet = 1;
+                    rtp_port_mask = 0xfffe;
+                    is_rtcp = (htons(header_udp->source) & 1) && (htons(header_udp->dest) & 1);
+                }
+                else
+                {
+                    save_this_rtp_packet = 0;
                 }
 
                 if (save_this_rtp_packet &&
-                        ct->find_ip_port_ssrc(
-                            hdaddr(header_ip),htons(header_udp->dest) & rtp_port_mask,
-                            get_ssrc(data,is_rtcp),
-                            &ce, &idx_rtp)){
+                    ct->find_ip_port_ssrc(
+                        hdaddr(header_ip), htons(header_udp->dest) & rtp_port_mask,
+                        get_ssrc(data, is_rtcp),
+                        &ce, &idx_rtp))
+                {
                     if (ce->f_pcap != NULL &&
                         (opt_rtpsave != RTPSAVE_RTPEVENT ||
-                         data[1] == ce->rtpmap_event)) {
-                        ce->last_packet_time=pkt_header->ts.tv_sec;
+                         data[1] == ce->rtpmap_event))
+                    {
+                        ce->last_packet_time = pkt_header->ts.tv_sec;
                         pcap_dump((u_char *)ce->f_pcap, pkt_header, pkt_data);
-                        if (opt_packetbuffered) {
+                        if (opt_packetbuffered)
+                        {
                             pcap_dump_flush(ce->f_pcap);
                         }
                     }
-                }else if (save_this_rtp_packet &&
-                        ct->find_ip_port_ssrc(
-                            hsaddr(header_ip),htons(header_udp->source) & rtp_port_mask,
-                            get_ssrc(data,is_rtcp),
-                            &ce, &idx_rtp)){
+                }
+                else if (save_this_rtp_packet &&
+                         ct->find_ip_port_ssrc(
+                             hsaddr(header_ip), htons(header_udp->source) & rtp_port_mask,
+                             get_ssrc(data, is_rtcp),
+                             &ce, &idx_rtp))
+                {
                     if (ce->f_pcap != NULL &&
-                        (opt_rtpsave != RTPSAVE_RTPEVENT || data[1] == ce->rtpmap_event)) {
-                        ce->last_packet_time=pkt_header->ts.tv_sec;
+                        (opt_rtpsave != RTPSAVE_RTPEVENT || data[1] == ce->rtpmap_event))
+                    {
+                        ce->last_packet_time = pkt_header->ts.tv_sec;
                         pcap_dump((u_char *)ce->f_pcap, pkt_header, pkt_data);
-                        if (opt_packetbuffered) {
+                        if (opt_packetbuffered)
+                        {
                             pcap_dump_flush(ce->f_pcap);
                         }
                     }
-                }else if (get_method(data, sip_method, sizeof(sip_method)) ||
-                          !memcmp(data, "SIP/2.0 ", strlen("SIP/2.0 "))) {
+                }
+                else if (get_method(data, sip_method, sizeof(sip_method)) ||
+                         !memcmp(data, "SIP/2.0 ", strlen("SIP/2.0 ")))
+                {
                     char caller[256] = "";
                     char called[256] = "";
                     char callid[512] = "";
 
-		    data[datalen]=0;
-                    if (get_sip_peername(data,datalen,"From:",caller,sizeof(caller))) {
-                        get_sip_peername(data,datalen,"f:",caller,sizeof(caller));
+                    data[datalen] = 0;
+                    if (get_sip_peername(data, datalen, "From:", caller, sizeof(caller)))
+                    {
+                        get_sip_peername(data, datalen, "f:", caller, sizeof(caller));
                     }
-                    if (get_sip_peername(data,datalen,"To:",called,sizeof(called))) {
-                        get_sip_peername(data,datalen,"t:",called,sizeof(called));
+                    if (get_sip_peername(data, datalen, "To:", called, sizeof(called)))
+                    {
+                        get_sip_peername(data, datalen, "t:", called, sizeof(called));
                     }
-		    s=gettag(data,datalen,"Call-ID:",&l) ? :
-		      gettag(data,datalen,"i:",&l);
+                    s = gettag(data, datalen, "Call-ID:", &l) ?: gettag(data, datalen, "i:", &l);
                     memcpy(callid, s, l);
                     callid[l] = '\0';
-                    number_filter_matched=false;
+                    number_filter_matched = false;
                     if (!number_filter_in_use ||
-                        (regexec(&number_filter, caller, 1, pmatch, 0)==0) ||
-                        (regexec(&number_filter, called, 1, pmatch, 0)==0)) {
-                        number_filter_matched=true;
+                        (regexec(&number_filter, caller, 1, pmatch, 0) == 0) ||
+                        (regexec(&number_filter, called, 1, pmatch, 0) == 0))
+                    {
+                        number_filter_matched = true;
                     }
-		    if (s!=NULL && ((idx=ct->find_by_call_id(s,l))<0) && number_filter_matched){
-			if ((idx=ct->add(s,l, // callid
-                                         caller,
-                                         called,
-                                         pkt_header->ts.tv_sec))<0){
-			    printf("Too many simultaneous calls. Ran out of call table space!\n");
-			}else{
-			    if (regexec(&method_filter, sip_method, 1, pmatch, 0) == 0){
-                                if ((--call_skip_cnt)>0){
-                                    if (verbosity>=3){
-                                        printf("Skipping %s call from %s to %s \n",sip_method,caller,called);
+                    if (s != NULL && ((idx = ct->find_by_call_id(s, l)) < 0) && number_filter_matched)
+                    {
+                        if ((idx = ct->add(s, l, // callid
+                                           caller,
+                                           called,
+                                           pkt_header->ts.tv_sec)) < 0)
+                        {
+                            printf("Too many simultaneous calls. Ran out of call table space!\n");
+                        }
+                        else
+                        {
+                            if (regexec(&method_filter, sip_method, 1, pmatch, 0) == 0)
+                            {
+                                if ((--call_skip_cnt) > 0)
+                                {
+                                    if (verbosity >= 3)
+                                    {
+                                        printf("Skipping %s call from %s to %s \n", sip_method, caller, called);
                                     }
-                                    ct->table[idx].f_pcap=NULL;
-                                } else {
+                                    ct->table[idx].f_pcap = NULL;
+                                }
+                                else
+                                {
                                     char fn[1024], dn[1024];
                                     call_skip_cnt = opt_call_skip_n;
                                     expand_dir_template(fn, sizeof(fn), opt_fntemplate,
                                                         caller, called, callid,
                                                         pkt_header->ts.tv_sec);
-                                    if (strchr(fn, '/')) {
+                                    if (strchr(fn, '/'))
+                                    {
                                         strcpy(dn, fn);
                                         mkdir_p(dirname(dn), 0777);
                                     }
                                     ct->table[idx].f_pcap = pcap_dump_open(handle, fn);
                                     strlcpy(ct->table[idx].fn_pcap, fn, sizeof(ct->table[idx].fn_pcap));
                                 }
-			    }else{
-				if (verbosity>=2){
-				    printf("Unknown SIP method:'%s'!\n",sip_method);
-				}
-				ct->table[idx].f_pcap=NULL;
-			    }
-			}
-		    }
-
-                    if(idx>=0){
-                        char *sdp = NULL;
-                        if (strcmp(sip_method,"BYE")==0){
-                            ct->table[idx].had_bye=1;
+                            }
+                            else
+                            {
+                                if (verbosity >= 2)
+                                {
+                                    printf("Unknown SIP method:'%s'!\n", sip_method);
+                                }
+                                ct->table[idx].f_pcap = NULL;
+                            }
                         }
-                        s=gettag(data,datalen,"Content-Type:",&l) ? :
-                          gettag(data,datalen,"c:",&l);
+                    }
+
+                    if (idx >= 0)
+                    {
+                        char *sdp = NULL;
+                        if (strcmp(sip_method, "BYE") == 0)
+                        {
+                            ct->table[idx].had_bye = 1;
+                        }
+                        s = gettag(data, datalen, "Content-Type:", &l) ?: gettag(data, datalen, "c:", &l);
                         if (l > 0 && s && strncasecmp(s, "application/sdp", l) == 0 &&
-                                (sdp = strstr(data,"\r\n\r\n")) != NULL) {
+                            (sdp = strstr(data, "\r\n\r\n")) != NULL)
+                        {
                             parse_sdp(sdp, datalen - (sdp - data), &ct->table[idx]);
-                        } else if (l > 0 && s && strncasecmp(s, "multipart/mixed;boundary=", MIN(l,25)) == 0 &&
-                                (sdp = strstr(data,"\r\n\r\n")) != NULL) {
+                        }
+                        else if (l > 0 && s && strncasecmp(s, "multipart/mixed;boundary=", MIN(l, 25)) == 0 &&
+                                 (sdp = strstr(data, "\r\n\r\n")) != NULL)
+                        {
                             // FIXME: do proper mime miltipart parsing
                             parse_sdp(sdp, datalen - (sdp - data), &ct->table[idx]);
                         }
-                        if (ct->table[idx].f_pcap!=NULL){
-                            pcap_dump((u_char *)ct->table[idx].f_pcap,pkt_header,pkt_data);
-                            if (opt_packetbuffered) {pcap_dump_flush(ct->table[idx].f_pcap);}
+                        if (ct->table[idx].f_pcap != NULL)
+                        {
+                            pcap_dump((u_char *)ct->table[idx].f_pcap, pkt_header, pkt_data);
+                            if (opt_packetbuffered)
+                            {
+                                pcap_dump_flush(ct->table[idx].f_pcap);
+                            }
                         }
-                        if (header_ip->version == 4 && header_ip->frag_off == htons(0x2000)) { //flags == more fragments and offset == 0
+                        if (header_ip->version == 4 && header_ip->frag_off == htons(0x2000))
+                        { // flags == more fragments and offset == 0
                             ct->add_ipfrag((struct addr_addr_id){header_ip->saddr,
                                                                  header_ip->daddr,
-                                                                 header_ip->id}, ct->table[idx].f_pcap);
-		        }
-                        if (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_FRAGMENT){
-                            struct ipv6fraghdr *frag = (ipv6fraghdr*)(((char*)header_ipv6)+sizeof(*header_ipv6));
+                                                                 header_ip->id},
+                                           ct->table[idx].f_pcap);
+                        }
+                        if (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_FRAGMENT)
+                        {
+                            struct ipv6fraghdr *frag = (ipv6fraghdr *)(((char *)header_ipv6) + sizeof(*header_ipv6));
                             ct->add_ipfrag((struct addr_addr_id){hsaddr(header_ipv6),
                                                                  hdaddr(header_ipv6),
-                                                                 (uint16_t)frag->id}, ct->table[idx].f_pcap);
-		        }
+                                                                 (uint16_t)frag->id},
+                                           ct->table[idx].f_pcap);
+                        }
                     }
-		}else{
-		    if (verbosity>=4){
-			char st1[INET6_ADDRSTRLEN];
-			char st2[INET6_ADDRSTRLEN];
+                }
+                else
+                {
+                    if (verbosity >= 4)
+                    {
+                        char st1[INET6_ADDRSTRLEN];
+                        char st2[INET6_ADDRSTRLEN];
 
-                        if (header_ip->version == 4){
+                        if (header_ip->version == 4)
+                        {
                             inet_ntop(AF_INET, &(header_ip->saddr), st1, sizeof(st1));
                             inet_ntop(AF_INET, &(header_ip->daddr), st2, sizeof(st2));
-                        }else{
+                        }
+                        else
+                        {
                             inet_ntop(AF_INET6, &(header_ipv6->saddr), st1, sizeof(st1));
                             inet_ntop(AF_INET6, &(header_ipv6->daddr), st2, sizeof(st2));
                         }
-                        printf ("Skipping udp packet %s:%d->%s:%d\n",
-                            st1, htons(header_udp->source),
-                            st2, htons(header_udp->dest));
-		    }
-		}
-	    }
-	}
+                        printf("Skipping udp packet %s:%d->%s:%d\n",
+                               st1, htons(header_udp->source),
+                               st2, htons(header_udp->dest));
+                    }
+                }
+            }
+        }
     }
     // flush / close files
     ct->do_cleanup(INT32_MAX);
@@ -745,144 +940,170 @@ int main(int argc, char *argv[])
         int status;
         waitpid(-1, &status, 0);
     }
-    return(0);
+    return (0);
 }
 
-int get_sip_peername(char *data, int data_len, const char *tag, char *peername, int peername_len){
-    unsigned long r,r2,peername_tag_len;
-    const char *peername_tag = gettag(data,data_len,tag,&peername_tag_len);
-    if ((r=(unsigned long)memmem(peername_tag,peername_tag_len,"sip:",4))==0 &&
-        (r=(unsigned long)memmem(peername_tag,peername_tag_len,"tel:",4))==0){
-	goto fail_exit;
+int get_sip_peername(char *data, int data_len, const char *tag, char *peername, int peername_len)
+{
+    unsigned long r, r2, peername_tag_len;
+    const char *peername_tag = gettag(data, data_len, tag, &peername_tag_len);
+    if ((r = (unsigned long)memmem(peername_tag, peername_tag_len, "sip:", 4)) == 0 &&
+        (r = (unsigned long)memmem(peername_tag, peername_tag_len, "tel:", 4)) == 0)
+    {
+        goto fail_exit;
     }
-    r+=4;
-    if ((r2=(unsigned long)memmem(peername_tag,peername_tag_len,"@",1))==0 &&
-        (r2=(unsigned long)memmem(peername_tag,peername_tag_len,">",1))==0){
-	goto fail_exit;
+    r += 4;
+    if ((r2 = (unsigned long)memmem(peername_tag, peername_tag_len, "@", 1)) == 0 &&
+        (r2 = (unsigned long)memmem(peername_tag, peername_tag_len, ">", 1)) == 0)
+    {
+        goto fail_exit;
     }
-    if (r2<=r){
-	goto fail_exit;
+    if (r2 <= r)
+    {
+        goto fail_exit;
     }
-    memcpy(peername,(void*)r,r2-r);
-    memset(peername+(r2-r),0,1);
+    memcpy(peername, (void *)r, r2 - r);
+    memset(peername + (r2 - r), 0, 1);
     return 0;
 fail_exit:
-    strcpy(peername,"empty");
+    strcpy(peername, "empty");
     return 1;
 }
 
-int get_ip_port_from_sdp(const char *sdp, size_t sdplen, in_addr_t *addr, unsigned short *port){
+int get_ip_port_from_sdp(const char *sdp, size_t sdplen, in_addr_t *addr, unsigned short *port)
+{
     unsigned long l;
     const char *s;
     char s1[20];
     s = gettag(sdp, sdplen, "c=IN IP4 ", &l);
-    memset(s1,'\0',sizeof(s1));
-    memcpy(s1,s,MIN(l,19));
-    if ((long)(*addr=inet_addr(s1))==-1){
-	*addr=0;
-	*port=0;
-	return 1;
+    memset(s1, '\0', sizeof(s1));
+    memcpy(s1, s, MIN(l, 19));
+    if ((long)(*addr = inet_addr(s1)) == -1)
+    {
+        *addr = 0;
+        *port = 0;
+        return 1;
     }
     s = gettag(sdp, sdplen, "m=audio ", &l);
-    if (l==0){
-        s=gettag(sdp, sdplen, "m=image ", &l);
+    if (l == 0)
+    {
+        s = gettag(sdp, sdplen, "m=image ", &l);
     }
-    if (l==0 || (*port=atoi(s))==0){
-	*port=0;
-	return 1;
+    if (l == 0 || (*port = atoi(s)) == 0)
+    {
+        *port = 0;
+        return 1;
     }
     return 0;
 }
 
-inline uint32_t get_ssrc (void *udp_packet_data_pointer, bool is_rtcp){
-    if (is_rtcp){
-        return ntohl(*(uint32_t*)((uint8_t*)udp_packet_data_pointer+4));
-    }else{
-        return ntohl(*(uint32_t*)((uint8_t*)udp_packet_data_pointer+8));
+inline uint32_t get_ssrc(void *udp_packet_data_pointer, bool is_rtcp)
+{
+    if (is_rtcp)
+    {
+        return ntohl(*(uint32_t *)((uint8_t *)udp_packet_data_pointer + 4));
+    }
+    else
+    {
+        return ntohl(*(uint32_t *)((uint8_t *)udp_packet_data_pointer + 8));
     }
 }
 
-long long parse_size_string(char *s){
+long long parse_size_string(char *s)
+{
     char multiplier[32];
     long long result;
     int i;
 
-    struct multiplier_element {
+    struct multiplier_element
+    {
         char text[32];
         unsigned long value;
     } multipliers[] = {
-        {"",1},
-        {"b",1},
-        {"byte",1},
-        {"bytes",1},
-        {"kb",1000},
-        {"kib",1024},
-        {"mb",1000*1000},
-        {"mib",1024*1024},
-        {"gb",1000*1000*1000},
-        {"gib",1024*1024*1024},
-        {"",0}
-    };
+        {"", 1},
+        {"b", 1},
+        {"byte", 1},
+        {"bytes", 1},
+        {"kb", 1000},
+        {"kib", 1024},
+        {"mb", 1000 * 1000},
+        {"mib", 1024 * 1024},
+        {"gb", 1000 * 1000 * 1000},
+        {"gib", 1024 * 1024 * 1024},
+        {"", 0}};
 
-    if (strlen(s)>=32){
+    if (strlen(s) >= 32)
+    {
         return 0;
     }
-    result=0;
-    multiplier[0]=0;
-    sscanf (s,"%lld%s",&result,multiplier);
-    for (i = 0; multipliers[i].value>0; i++){
-        if (strcasecmp(multipliers[i].text,multiplier)==0){
-            result*=multipliers[i].value;
+    result = 0;
+    multiplier[0] = 0;
+    sscanf(s, "%lld%s", &result, multiplier);
+    for (i = 0; multipliers[i].value > 0; i++)
+    {
+        if (strcasecmp(multipliers[i].text, multiplier) == 0)
+        {
+            result *= multipliers[i].value;
             return result;
         }
     }
     return 0;
 }
 
-char *trim_whitespace(char *str) {
+char *trim_whitespace(char *str)
+{
     char *end;
 
     // Trim leading space
-    while(isspace((unsigned char)*str)) str++;
+    while (isspace((unsigned char)*str))
+        str++;
 
-    if(*str == 0)  // All spaces?
+    if (*str == 0) // All spaces?
         return str;
 
     // Trim trailing space
     end = str + strlen(str) - 1;
-    while(end > str && isspace((unsigned char)*end)) end--;
+    while (end > str && isspace((unsigned char)*end))
+        end--;
 
     // Null terminate after last non-space character
-    *(end+1) = '\0';
+    *(end + 1) = '\0';
 
     return str;
 }
 
-vector<string> &split(const string &s, char delim, vector<string> &elems) {
+vector<string> &split(const string &s, char delim, vector<string> &elems)
+{
     stringstream ss(s);
     string item;
-    while (getline(ss, item, delim)) {
+    while (getline(ss, item, delim))
+    {
         elems.push_back(item);
     }
     return elems;
 }
 
-vector<string> split(const string &s, char delim) {
+vector<string> split(const string &s, char delim)
+{
     vector<string> elems;
     split(s, delim, elems);
     return elems;
 }
 
 #ifndef _GNU_SOURCE
-void *memmem(const void* haystack, size_t hl, const void* needle, size_t nl) {
+void *memmem(const void *haystack, size_t hl, const void *needle, size_t nl)
+{
     int i;
 
-    if (nl>hl) return 0;
-    for (i=hl-nl+1; i; --i) {
-	if (!memcmp(haystack,needle,nl)){
-	    return (char*)haystack;
-	}
-	haystack=(void*)((char*)haystack+1);
+    if (nl > hl)
+        return 0;
+    for (i = hl - nl + 1; i; --i)
+    {
+        if (!memcmp(haystack, needle, nl))
+        {
+            return (char *)haystack;
+        }
+        haystack = (void *)((char *)haystack + 1);
     }
     return 0;
 }
