@@ -721,9 +721,11 @@ int main(int argc, char *argv[])
 
                 int extra_len = (header_ipv6->version == 6 && header_ipv6->nexthdr == IPPROTO_FRAGMENT) ? 8 : 0;
                 tcph = (tcphdr *)((char *)header_ip +
-                                  ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr)) + extra_len);
+                    ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr)) + extra_len);
                 header_udp = (udphdr *)((char *)header_ip +
-                                        ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr)) + extra_len);
+                    ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr)) + extra_len);
+
+                // Determin if we should save this RTP packet
                 if ((header_ip->version == 4 && header_ip->protocol == IPPROTO_UDP) ||
                     (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_UDP) ||
                     (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_FRAGMENT &&
@@ -753,6 +755,7 @@ int main(int argc, char *argv[])
                     save_this_rtp_packet = 0;
                 }
 
+                // Check if the packet matches the forward direction
                 if (save_this_rtp_packet &&
                     ct->find_ip_port_ssrc(
                         hdaddr(header_ip), htons(header_udp->dest) & rtp_port_mask,
@@ -771,12 +774,14 @@ int main(int argc, char *argv[])
                         }
                     }
                 }
+                // Check if the packet matches the reverse direction
                 else if (save_this_rtp_packet &&
                          ct->find_ip_port_ssrc(
                              hsaddr(header_ip), htons(header_udp->source) & rtp_port_mask,
                              get_ssrc(data, is_rtcp),
                              &ce, &idx_rtp))
                 {
+                    
                     if (ce->f_pcap != NULL &&
                         (opt_rtpsave != RTPSAVE_RTPEVENT || data[1] == ce->rtpmap_event))
                     {
@@ -788,6 +793,17 @@ int main(int argc, char *argv[])
                         }
                     }
                 }
+                // Otherwise check for SIP messages
+                else if (datalen > 0 && datalen < 4096 && data[0] == 'S' && data[1] == 'I' && data[2] == 'P')
+                {
+                    // Check if the packet is a SIP message
+                    if (get_method(data, sip_method, sizeof(sip_method)) &&
+                        (strcmp(sip_method, "ACK") == 0 || strcmp(sip_method, "CANCEL") == 0))
+                    {
+                        // Ignore ACK and CANCEL messages
+                        continue;
+                    }
+                }
                 else if (get_method(data, sip_method, sizeof(sip_method)) ||
                          !memcmp(data, "SIP/2.0 ", strlen("SIP/2.0 ")))
                 {
@@ -795,6 +811,7 @@ int main(int argc, char *argv[])
                     char called[256] = "";
                     char callid[512] = "";
 
+                    // Get the caller and called numbers
                     data[datalen] = 0;
                     if (get_sip_peername(data, datalen, "From:", caller, sizeof(caller)))
                     {
@@ -804,9 +821,13 @@ int main(int argc, char *argv[])
                     {
                         get_sip_peername(data, datalen, "t:", called, sizeof(called));
                     }
+
+                    // Get the Call-ID
                     s = gettag(data, datalen, "Call-ID:", &l) ?: gettag(data, datalen, "i:", &l);
                     memcpy(callid, s, l);
                     callid[l] = '\0';
+
+                    // Check if the caller and called numbers match the number filter
                     number_filter_matched = false;
                     if (!number_filter_in_use ||
                         (regexec(&number_filter, caller, 1, pmatch, 0) == 0) ||
@@ -814,8 +835,10 @@ int main(int argc, char *argv[])
                     {
                         number_filter_matched = true;
                     }
+
                     if (s != NULL && ((idx = ct->find_by_call_id(s, l)) < 0) && number_filter_matched)
                     {
+                        // Add the call to the call table
                         if ((idx = ct->add(s, l, // callid
                                            caller,
                                            called,
