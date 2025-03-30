@@ -167,6 +167,7 @@ int main(int argc, char *argv[])
     char *ifname;/* interface to sniff on */
     char *fname;/* pcap file to read on */
     char *opt_ipfilter = NULL; /* pcap IP address to lookup in layer-3 */
+    const char *opt_sip_header_filter = NULL; /* SIP header filter */    
     char errbuf[PCAP_ERRBUF_SIZE];/* Error string */
     struct bpf_program fp;/* The compiled filter */
     char filter_exp[MAX_PCAP_FILTER_EXPRESSION] = "";
@@ -183,8 +184,16 @@ int main(int argc, char *argv[])
     int call_skip_cnt=1;
     int opt_pcap_buffer_size=0; /* Operating system capture buffer size, a.k.a. libpcap ring buffer size */
     int opt_absolute_timeout = INT32_MAX;
-    bool number_filter_matched=false;
-    bool number_filter_in_use=false;
+
+    bool number_filter_matched = false;
+    bool number_filter_in_use = false;
+
+    bool header_filter_matched = false;
+    bool header_filter_in_use = false;
+
+    bool ip_filter_matched = false;
+    bool ip_filter_in_use = false;
+
     regex_t number_filter, method_filter;
     regmatch_t pmatch[1];
     const char *pid_file="/var/run/pcapsipdump.pid";
@@ -205,7 +214,7 @@ int main(int argc, char *argv[])
     while(1) {
         signed char c;
 
-        c = getopt (argc, argv, "i:r:d:v:m:n:R:l:B:T:t:I:P:fpU");
+        c = getopt (argc, argv, "i:r:d:v:m:n:R:l:B:T:t:I:H:P:fpU");
         if (c == -1)
             break;
 
@@ -275,6 +284,7 @@ int main(int argc, char *argv[])
                 break;
             case 'I':
                 opt_ipfilter = optarg;
+                ip_filter_in_use = true;
                 break;
             case 'T':
                 opt_absolute_timeout = atol(optarg);
@@ -284,6 +294,10 @@ int main(int argc, char *argv[])
                 break;
             case 'P':
                 pid_file = optarg;
+                break;
+            case 'H':
+                opt_sip_header_filter = optarg;
+                header_filter_in_use = true;
                 break;
         }
     }
@@ -317,28 +331,29 @@ int main(int argc, char *argv[])
 		"      Set this to few MiB or more to avoid packets dropped by kernel.\n"
 		" -R   RTP filter. Specifies what kind of RTP information to include in capture:\n"
 		"      'rtp+rtcp' (default), 'rtp', 'rtpevent', 't38', or 'none'.\n"
-		" -I   IP filter. This will lookup for a specific IP address on layer-3 to match either\n"
+        " -I   IP-filter. This will lookup for a specific IP address on layer-3 to match either\n"
         "      source or destination.\n"
         "      This can be a comma-separated list, i.e.:\n"
         "      -I 10.0.0.1,205.151.222.250\n"
+        " -H   Header-filter. This will lookup for a specific SIP Header to match for capture.\n"
         " -m   Method-filter. Default is '^(INVITE|OPTIONS|REGISTER)$'\n"
 		" -n   Number-filter. Only calls to/from specified number will be recorded\n"
 		"      Argument is a regular expression. See 'man 7 regex' for details.\n"
-                " -l   Record only each N-th call (i.e. '-l 3' = record only each third call)\n"
-                " -d   Set directory (or filename template), where captured files will be stored.\n"
-                "      ex.: -d /var/spool/pcapsipdump/%%Y%%m%%d/%%H/%%Y%%m%%d-%%H%%M%%S-%%f-%%t-%%i.pcap\n"
-                " -T   Unconditionally stop recording a call after it was active for this many seconds.\n"
-                "      Might be useful for broken peers that keep sending RTP long after call ended.\n"
-                " -t   <trigger>:<action>:<parameter>. Parameter is %%-expanded (see below)\n"
-                "      Triggers: open = when opening a new .pcap file; close = when closing\n"
-                "      Actions and their parameters:\n"
-                "      mv:<directory> - move .pcap files to <directory> (using /bin/mv)\n"
-                "      exec:\"/bin/blah args...\" - fork and execute /bin/blah with arguments\n"
-                "      sh:\"shell code\" - fork and execute /bin/sh -c \"shell code\"\n"
-                " *    Following %%-codes are expanded in -d and -t: %%f (from/caller), %%t (to/callee),\n"
-                "      %%i (call-id), and call date/time (see 'man 3 strftime' for details)\n"
-                " *    Trailing argument is pcap filter expression syntax, see 'man 7 pcap-filter'\n"
-                , PCAPSIPDUMP_VERSION);
+        " -l   Record only each N-th call (i.e. '-l 3' = record only each third call)\n"
+        " -d   Set directory (or filename template), where captured files will be stored.\n"
+        "      ex.: -d /var/spool/pcapsipdump/%%Y%%m%%d/%%H/%%Y%%m%%d-%%H%%M%%S-%%f-%%t-%%i.pcap\n"
+        " -T   Unconditionally stop recording a call after it was active for this many seconds.\n"
+        "      Might be useful for broken peers that keep sending RTP long after call ended.\n"
+        " -t   <trigger>:<action>:<parameter>. Parameter is %%-expanded (see below)\n"
+        "      Triggers: open = when opening a new .pcap file; close = when closing\n"
+        "      Actions and their parameters:\n"
+        "      mv:<directory> - move .pcap files to <directory> (using /bin/mv)\n"
+        "      exec:\"/bin/blah args...\" - fork and execute /bin/blah with arguments\n"
+        "      sh:\"shell code\" - fork and execute /bin/sh -c \"shell code\"\n"
+        " *    Following %%-codes are expanded in -d and -t: %%f (from/caller), %%t (to/callee),\n"
+        "      %%i (call-id), and call date/time (see 'man 3 strftime' for details)\n"
+        " *    Trailing argument is pcap filter expression syntax, see 'man 7 pcap-filter'\n"
+        , PCAPSIPDUMP_VERSION);
 	return 1;
     }
 
@@ -466,10 +481,10 @@ int main(int argc, char *argv[])
             /* Timeout elapsed */
             continue;
 
-	    if (pkt_header->ts.tv_sec-last_cleanup>15) {
-            ct->do_cleanup(pkt_header->ts.tv_sec);
-            last_cleanup=pkt_header->ts.tv_sec;
-	    }
+            if (pkt_header->ts.tv_sec-last_cleanup>15) {
+                ct->do_cleanup(pkt_header->ts.tv_sec);
+                last_cleanup=pkt_header->ts.tv_sec;
+            }
 
             if (offset_to_ip == sizeof(struct ether_header)) {
                 header_ip = ethernet_get_header_ip(pkt_data);
@@ -480,36 +495,6 @@ int main(int argc, char *argv[])
                 continue;
             }
             header_ip=skip_tunnel_ip_header(header_ip);
-
-        /* IP filtering */
-        if (opt_ipfilter != NULL) {
-
-            char s_ip[16], d_ip[16];
-            struct in_addr in;
-
-            in.s_addr = header_ip->saddr;
-            strcpy(s_ip, inet_ntoa(in));
-            in.s_addr = header_ip->daddr;
-            strcpy(d_ip, inet_ntoa(in));
-
-            vector<string> ip_addresses = split(opt_ipfilter, ',');
-            bool found = false;
-
-            for (vector<string>::size_type i = 0; i != ip_addresses.size(); i++) {
-                string ip = ip_addresses[i];
-                if (strcmp(s_ip, trim_whitespace((char *)ip.c_str())) == 0 ||
-                    strcmp(d_ip, trim_whitespace((char *)ip.c_str())) == 0) {
-                    found = true;
-                    break;
-                }
-            }
-
-            if (!found) {
-                continue;
-            }
-        }
-
-
             header_ipv6=(ipv6hdr *)header_ip;
             if (header_ip->version == 4 && (header_ip->frag_off & htons(0x1fff)) > 0) { // fragment offset > 0
                 struct addr_addr_id aai = (struct addr_addr_id){header_ip->saddr,
@@ -644,13 +629,78 @@ int main(int argc, char *argv[])
 		      gettag(data,datalen,"i:",&l);
                     memcpy(callid, s, l);
                     callid[l] = '\0';
+
+                    // Number filtering logic
                     number_filter_matched=false;
                     if (!number_filter_in_use ||
                         (regexec(&number_filter, caller, 1, pmatch, 0)==0) ||
                         (regexec(&number_filter, called, 1, pmatch, 0)==0)) {
                         number_filter_matched=true;
                     }
-		    if (s!=NULL && ((idx=ct->find_by_call_id(s,l))<0) && number_filter_matched){
+
+                    // IP filtering logic
+                    ip_filter_matched = false;
+                    if (!ip_filter_in_use)
+                    {
+                        ip_filter_matched = true;
+                    }
+                    else
+                    {
+                        char s_ip[16], d_ip[16];
+                        struct in_addr in;
+
+                        // Extract source and destination IP addresses
+                        in.s_addr = header_ip->saddr;
+                        strcpy(s_ip, inet_ntoa(in));
+                        in.s_addr = header_ip->daddr;
+                        strcpy(d_ip, inet_ntoa(in));
+
+                        // Split the opt_ipfilter string into individual IP addresses
+                        vector<string> ip_addresses = split(opt_ipfilter, ',');
+                        for (vector<string>::size_type i = 0; i != ip_addresses.size(); i++)
+                        {
+                            string ip = ip_addresses[i];
+                            if (strcmp(s_ip, trim_whitespace((char *)ip.c_str())) == 0 ||
+                                strcmp(d_ip, trim_whitespace((char *)ip.c_str())) == 0)
+                            {
+                                ip_filter_matched = true;
+                                break;
+                            }
+                        }
+                    }    
+
+                    // SIP header filtering logic
+                    header_filter_matched = false;
+                    if (!header_filter_in_use)
+                    {
+                        header_filter_matched = true;
+                    }
+                    else
+                    {
+                        // Check if the SIP header is present in the message
+                        if (gettag(data, datalen, opt_sip_header_filter, &l) != NULL)
+                        {
+                            if (verbosity >= 2)
+                            {
+                                printf("Found SIP Header '%s' in %s\n", opt_sip_header_filter, sip_method);
+                            }
+                            header_filter_matched = true;
+                        } else
+                        {
+                            if (verbosity >= 2)
+                            {
+                                printf("SIP Header '%s' not found in %s!\n", opt_sip_header_filter, sip_method);
+                            }
+                        }
+                    }
+
+
+
+		    if (s!=NULL && ((idx=ct->find_by_call_id(s,l))<0) 
+                && number_filter_matched 
+                && ip_filter_matched
+                && header_filter_matched
+            ) {
 			if ((idx=ct->add(s,l, // callid
                                          caller,
                                          called,
