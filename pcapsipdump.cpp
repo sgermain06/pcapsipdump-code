@@ -63,24 +63,6 @@ vector<string> split(const string &s, char delim);
 void *memmem(const void *haystack, size_t hl, const void *needle, size_t nl);
 #endif
 
-int find_sip_header(const char *data, int data_len, const char *header, char *value, int value_len)
-{
-    unsigned long header_len;
-    const char *header_start = gettag(data, data_len, header, &header_len);
-
-    if (!header_start || header_len == 0)
-    {
-        return 1; // Header not found
-    }
-
-    // Copy the header value into the provided buffer
-    int copy_len = MIN(header_len, value_len - 1);
-    memcpy(value, header_start, copy_len);
-    value[copy_len] = '\0'; // Null-terminate the string
-
-    return 0; // Success
-}
-
 calltable *ct;
 int verbosity = 0;
 int opt_t38only = 0;
@@ -217,8 +199,16 @@ int main(int argc, char *argv[])
     int call_skip_cnt = 1;
     int opt_pcap_buffer_size = 0; /* Operating system capture buffer size, a.k.a. libpcap ring buffer size */
     int opt_absolute_timeout = INT32_MAX;
+
     bool number_filter_matched = false;
     bool number_filter_in_use = false;
+
+    bool header_filter_matched = false;
+    bool header_filter_in_use = false;
+
+    bool ip_filter_matched = false;
+    bool ip_filter_in_use = false;
+
     regex_t number_filter, method_filter;
     regmatch_t pmatch[1];
     const char *pid_file = "/var/run/pcapsipdump.pid";
@@ -227,7 +217,8 @@ int main(int argc, char *argv[])
     {
         struct passwd *pw = getpwuid(getuid());
         opt_fntemplate = (char *)malloc(512);
-        strncpy(opt_fntemplate, pw->pw_dir, 512);
+        strncpy(opt_fntemplate, pw->pw_dir, 512 - 1); // Copy up to 511 characters
+        opt_fntemplate[511] = '\0';                  // Ensure null-termination
         strncat(opt_fntemplate, "/.var/spool/pcapsipdump/%Y%m%d/%H/%Y%m%d-%H%M%S-%f-%t-%i.pcap", 512 - 62 - 1);
     }
     else
@@ -328,6 +319,7 @@ int main(int argc, char *argv[])
             break;
         case 'I':
             opt_ipfilter = optarg;
+            ip_filter_in_use = true;
             break;
         case 'T':
             opt_absolute_timeout = atol(optarg);
@@ -340,6 +332,7 @@ int main(int argc, char *argv[])
             break;
         case 'H':
             opt_sip_header_filter = optarg;
+            header_filter_in_use = true;
             break;
         }
     }
@@ -374,7 +367,6 @@ int main(int argc, char *argv[])
                " -v   Set verbosity level (higher is more verbose).\n"
                " -B   Set the operating system capture buffer size, a.k.a. ring buffer size.\n"
                "      This can be expressed in bytes/KB(*1000)/KiB(*1024)/MB/MiB/GB/GiB. ex.: '-B 64MiB'\n"
-               "      Set this to few MiB or more to avoid packets dropped by kernel.\n"
                " -R   RTP filter. Specifies what kind of RTP information to include in capture:\n"
                "      'rtp+rtcp' (default), 'rtp', 'rtpevent', 't38', or 'none'.\n"
                " -I   IP-filter. This will lookup for a specific IP address on layer-3 to match either\n"
@@ -571,76 +563,6 @@ int main(int argc, char *argv[])
                 continue;
             }
             header_ip = skip_tunnel_ip_header(header_ip);
-
-            /* IP and SIP header filtering */
-            if (opt_ipfilter != NULL || opt_sip_header_filter != NULL)
-            {
-                bool ip_filter_matched = false;
-                bool sip_header_matched = false;
-
-                // IP filtering logic
-                if (opt_ipfilter != NULL)
-                {
-                    char s_ip[16], d_ip[16];
-                    struct in_addr in;
-
-                    // Extract source and destination IP addresses
-                    in.s_addr = header_ip->saddr;
-                    strcpy(s_ip, inet_ntoa(in));
-                    in.s_addr = header_ip->daddr;
-                    strcpy(d_ip, inet_ntoa(in));
-
-                    // Split the opt_ipfilter string into individual IP addresses
-                    vector<string> ip_addresses = split(opt_ipfilter, ',');
-                    for (vector<string>::size_type i = 0; i != ip_addresses.size(); i++)
-                    {
-                        string ip = ip_addresses[i];
-                        if (strcmp(s_ip, trim_whitespace((char *)ip.c_str())) == 0 ||
-                            strcmp(d_ip, trim_whitespace((char *)ip.c_str())) == 0)
-                        {
-                            ip_filter_matched = true;
-                            break;
-                        }
-                    }
-                }
-
-                // SIP header filtering logic
-                if (opt_sip_header_filter != NULL && data != NULL)
-                {
-                    char header_value[256] = ""; // Buffer to store the header value
-
-                    if (find_sip_header(data, datalen, opt_sip_header_filter, header_value, sizeof(header_value)) == 0)
-                    {
-                        printf("Found SIP Header: %s -> %s\n", opt_sip_header_filter, header_value);
-                        sip_header_matched = true;
-                    }
-                }
-
-                // If neither IP filter nor SIP header filter matched, check for active calls
-                if (!ip_filter_matched && !sip_header_matched)
-                {
-                    calltable_element *ce = NULL;
-                    int idx_rtp = 0;
-                    uint16_t rtp_port_mask = 0xffff;
-                    struct udphdr *header_udp = (udphdr *)((char *)header_ip +
-                                                           ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr)));
-
-                    // Check if the packet matches an active call in the call table
-                    if (!ct->find_ip_port_ssrc(
-                            hdaddr(header_ip), htons(header_udp->dest) & rtp_port_mask,
-                            get_ssrc((char *)header_udp + sizeof(*header_udp), false),
-                            &ce, &idx_rtp) &&
-                        !ct->find_ip_port_ssrc(
-                            hsaddr(header_ip), htons(header_udp->source) & rtp_port_mask,
-                            get_ssrc((char *)header_udp + sizeof(*header_udp), false),
-                            &ce, &idx_rtp))
-                    {
-                        // Skip the packet if it doesn't match IP filter, SIP header filter, or active calls
-                        continue;
-                    }
-                }
-            }
-
             header_ipv6 = (ipv6hdr *)header_ip;
             if (header_ip->version == 4 && (header_ip->frag_off & htons(0x1fff)) > 0)
             { // fragment offset > 0
@@ -726,6 +648,8 @@ int main(int argc, char *argv[])
                     ((header_ip->version == 4) ? sizeof(iphdr) : sizeof(ipv6hdr)) + extra_len);
 
                 // Determin if we should save this RTP packet
+
+                // Determin if we should save this RTP packet
                 if ((header_ip->version == 4 && header_ip->protocol == IPPROTO_UDP) ||
                     (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_UDP) ||
                     (header_ip->version == 6 && header_ipv6->nexthdr == IPPROTO_FRAGMENT &&
@@ -753,6 +677,7 @@ int main(int argc, char *argv[])
                 else
                 {
                     save_this_rtp_packet = 0;
+                // Check if the packet matches the forward direction
                 }
 
                 // Check if the packet matches the forward direction
@@ -771,12 +696,14 @@ int main(int argc, char *argv[])
                         if (opt_packetbuffered)
                         {
                             pcap_dump_flush(ce->f_pcap);
+                // Check if the packet matches the reverse direction
                         }
                     }
                 }
                 // Check if the packet matches the reverse direction
                 else if (save_this_rtp_packet &&
                          ct->find_ip_port_ssrc(
+                    
                              hsaddr(header_ip), htons(header_udp->source) & rtp_port_mask,
                              get_ssrc(data, is_rtcp),
                              &ce, &idx_rtp))
@@ -804,13 +731,21 @@ int main(int argc, char *argv[])
                         continue;
                     }
                 }
+                // Check for a SIP message
                 else if (get_method(data, sip_method, sizeof(sip_method)) ||
                          !memcmp(data, "SIP/2.0 ", strlen("SIP/2.0 ")))
                 {
+
+                    // Check if the caller and called numbers match the number filter
                     char caller[256] = "";
                     char called[256] = "";
                     char callid[512] = "";
 
+                    // Get the Call-ID
+                    s = gettag(data, datalen, "Call-ID:", &l) ?: gettag(data, datalen, "i:", &l);
+                    memcpy(callid, s, l);
+                    callid[l] = '\0';
+                    
                     // Get the caller and called numbers
                     data[datalen] = 0;
                     if (get_sip_peername(data, datalen, "From:", caller, sizeof(caller)))
@@ -822,11 +757,6 @@ int main(int argc, char *argv[])
                         get_sip_peername(data, datalen, "t:", called, sizeof(called));
                     }
 
-                    // Get the Call-ID
-                    s = gettag(data, datalen, "Call-ID:", &l) ?: gettag(data, datalen, "i:", &l);
-                    memcpy(callid, s, l);
-                    callid[l] = '\0';
-
                     // Check if the caller and called numbers match the number filter
                     number_filter_matched = false;
                     if (!number_filter_in_use ||
@@ -836,7 +766,67 @@ int main(int argc, char *argv[])
                         number_filter_matched = true;
                     }
 
-                    if (s != NULL && ((idx = ct->find_by_call_id(s, l)) < 0) && number_filter_matched)
+                    // IP filtering logic
+                    ip_filter_matched = false;
+                    if (!ip_filter_in_use)
+                    {
+                        ip_filter_matched = true;
+                    }
+                    else
+                    {
+                        char s_ip[16], d_ip[16];
+                        struct in_addr in;
+
+                        // Extract source and destination IP addresses
+                        in.s_addr = header_ip->saddr;
+                        strcpy(s_ip, inet_ntoa(in));
+                        in.s_addr = header_ip->daddr;
+                        strcpy(d_ip, inet_ntoa(in));
+
+                        // Split the opt_ipfilter string into individual IP addresses
+                        vector<string> ip_addresses = split(opt_ipfilter, ',');
+                        for (vector<string>::size_type i = 0; i != ip_addresses.size(); i++)
+                        {
+                            string ip = ip_addresses[i];
+                            if (strcmp(s_ip, trim_whitespace((char *)ip.c_str())) == 0 ||
+                                strcmp(d_ip, trim_whitespace((char *)ip.c_str())) == 0)
+                            {
+                                ip_filter_matched = true;
+                                break;
+                            }
+                        }
+                    }    
+
+                    // SIP header filtering logic
+                    header_filter_matched = false;
+                    if (!header_filter_in_use)
+                    {
+                        header_filter_matched = true;
+                    }
+                    else
+                    {
+                        // Check if the SIP header is present in the message
+                        if (gettag(data, datalen, opt_sip_header_filter, &l) != NULL)
+                        {
+                            if (verbosity >= 2)
+                            {
+                                printf("Found SIP Header '%s' in %s\n", opt_sip_header_filter, sip_method);
+                            }
+                            header_filter_matched = true;
+                        } else
+                        {
+                            if (verbosity >= 2)
+                            {
+                                printf("SIP Header '%s' not found in %s!\n", opt_sip_header_filter, sip_method);
+                            }
+                        }
+                    }
+
+                    if (s != NULL && ((idx = ct->find_by_call_id(s, l)) < 0) 
+                        && number_filter_matched 
+                        && ip_filter_matched 
+                        && header_filter_matched
+                    )
                     {
                         // Add the call to the call table
                         if ((idx = ct->add(s, l, // callid
