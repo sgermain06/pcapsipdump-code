@@ -1,0 +1,16 @@
+[Unit]
+Description=PCAPSipDump Service
+After=freeswitch.service
+
+[Service]
+User=root
+PIDFile=/var/run/pcapsipdump.pid
+EnvironmentFile=-/etc/default/pcapsipdump
+ExecStart=/usr/sbin/pcapsipdump -f -d $SPOOLDIR -i $DEVICE $OTHER_OPTS
+ExecStop=/usr/bin/kill -s HUP $MAINPID
+Restart=always
+RestartSec=3
+SuccessExitStatus=1 203 SIGTERM
+
+[Install]
+WantedBy=multi-user.target

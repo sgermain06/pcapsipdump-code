@@ -47,7 +47,14 @@ install-redhat:
 
 install-debian:
 	install debian/pcapsipdump.init ${DESTDIR}/etc/init.d/pcapsipdump
-	install debian/pcapsipdump.default ${DESTDIR}/etc/default/pcapsipdump
+	if [ ! -e ${DESTDIR}/etc/default/pcapsipdump ]; then \
+		install debian/pcapsipdump.default ${DESTDIR}/etc/default/pcapsipdump; \
+	fi
+	install debian/pcapsipdump.service ${DESTDIR}/usr/lib/systemd/system/pcapsipdump.service
+	chmod 664 ${DESTDIR}/usr/lib/systemd/system/pcapsipdump.service
+	install debian/pcapsipdump.cron ${DESTDIR}/etc/cron.d/pcapsipdump
+	chmod 644 ${DESTDIR}/etc/cron.d/pcapsipdump
+	systemctl daemon-reload
 
 .PHONY: tests
 

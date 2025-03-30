@@ -1,0 +1,7 @@
+SHELL=/bin/bash
+
+## Delete all files older than the retention period
+@hourly root . /etc/default/pcapsipdump && [ -d "$SPOOLDIR" ] && [[ "$RETENTION" =~ ^[0-9]+$ ]] && [ "$RETENTION" -gt 0 ] && /usr/bin/find $SPOOLDIR/* -depth -maxdepth 1 -type d -mtime +$RETENTION -exec /bin/rm -r {} \; > 2>&1
+
+## Delete files older than 1 day if disk usage exceeds disk quota
+@hourly root . /etc/default/pcapsipdump && [ -d "$SPOOLDIR" ] && [[ "$DISK_QUOTA" =~ ^[0-9]+$ ]] && [ "$DISK_QUOTA" -gt 0 ] && sl=$(df -h $SPOOLDIR | awk 'NR==2 {print $5}' | sed 's/%//') && if [[ $sl -gt ${DISK_QUOTA:-0} ]]; then echo "Disk almost full (${sl}%)"; /usr/bin/find $SPOOLDIR/* -depth -maxdepth 1 -type d -mtime +1 -exec /bin/rm -r {} \;; else echo "Disk space ok (${sl}%)"; fi > /dev/null 2>&1

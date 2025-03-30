@@ -20,7 +20,7 @@
 
 NAME="pcapsipdump"
 DAEMON="/usr/sbin/pcapsipdump"
-DAEMON_ARGS="-d $SPOOLDIR -i $DEVICE"
+DAEMON_ARGS="-d $SPOOLDIR -i $DEVICE $OTHER_OPTS"
 PIDFILE="/var/run/pcapsipdump.pid"
 
 start() {
