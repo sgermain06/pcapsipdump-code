@@ -145,12 +145,14 @@ fail:
     return false;
 }
 
-bool get_sip_response(const char *data, char *sip_response, size_t sip_response_size) {
+bool get_sip_response(const char *data, char *sip_response, size_t sip_response_size)
+{
     const char *response_start;
     const char *response_end;
 
     // Check if the message starts with "SIP/2.0 "
-    if (memcmp(data, "SIP/2.0 ", strlen("SIP/2.0 ")) != 0) {
+    if (memcmp(data, "SIP/2.0 ", strlen("SIP/2.0 ")) != 0)
+    {
         sip_response[0] = '\0'; // Not a SIP response
         return false;
     }
@@ -158,10 +160,12 @@ bool get_sip_response(const char *data, char *sip_response, size_t sip_response_
     // Find the end of the response line (up to the first CRLF or end of string)
     response_start = data + strlen("SIP/2.0 ");
     response_end = strchr(response_start, '\r');
-    if (!response_end) {
+    if (!response_end)
+    {
         response_end = strchr(response_start, '\n');
     }
-    if (!response_end) {
+    if (!response_end)
+    {
         response_end = response_start + strlen(response_start); // End of string
     }
 
@@ -207,10 +211,10 @@ int main(int argc, char *argv[])
     pcap_t *handle; /* Session handle */
     // directory/filename template, where .pcap files are written
     char *opt_fntemplate;
-    char *ifname;                             /* interface to sniff on */
-    char *fname;                              /* pcap file to read on */
-    char errbuf[PCAP_ERRBUF_SIZE];            /* Error string */
-    struct bpf_program fp;                    /* The compiled filter */
+    char *ifname;                  /* interface to sniff on */
+    char *fname;                   /* pcap file to read on */
+    char errbuf[PCAP_ERRBUF_SIZE]; /* Error string */
+    struct bpf_program fp;         /* The compiled filter */
     char filter_exp[MAX_PCAP_FILTER_EXPRESSION] = "";
     struct pcap_pkthdr *pkt_header; /* The header that pcap gives us */
     const u_char *pkt_data;         /* The actual packet */
@@ -400,6 +404,7 @@ int main(int argc, char *argv[])
                " -v   Set verbosity level (higher is more verbose).\n"
                " -B   Set the operating system capture buffer size, a.k.a. ring buffer size.\n"
                "      This can be expressed in bytes/KB(*1000)/KiB(*1024)/MB/MiB/GB/GiB. ex.: '-B 64MiB'\n"
+               "      Set this to few MiB or more to avoid packets dropped by kernel.\n"
                " -R   RTP filter. Specifies what kind of RTP information to include in capture:\n"
                "      'rtp+rtcp' (default), 'rtp', 'rtpevent', 't38', or 'none'.\n"
                " -I   IP-filter. This will lookup for a specific IP address on layer-3 to match either\n"
@@ -744,12 +749,10 @@ int main(int argc, char *argv[])
                 // Check if the packet matches the reverse direction
                 else if (save_this_rtp_packet &&
                          ct->find_ip_port_ssrc(
-                    
                              hsaddr(header_ip), htons(header_udp->source) & rtp_port_mask,
                              get_ssrc(data, is_rtcp),
                              &ce, &idx_rtp))
                 {
-                    
                     if (ce->f_pcap != NULL &&
                         (opt_rtpsave != RTPSAVE_RTPEVENT || data[1] == ce->rtpmap_event))
                     {
@@ -761,17 +764,7 @@ int main(int argc, char *argv[])
                         }
                     }
                 }
-                // Otherwise check for SIP messages
-                else if (datalen > 0 && datalen < 4096 && data[0] == 'S' && data[1] == 'I' && data[2] == 'P')
-                {
-                    // Ignore ACK and CANCEL messages
-                    if (get_method(data, sip_method, sizeof(sip_method)) &&
-                        (strcmp(sip_method, "ACK") == 0 || strcmp(sip_method, "CANCEL") == 0))
-                    {
-                        continue;
-                    }
-                }
-                // Check for a SIP message
+                // Check for SIP Request / Response
                 else if (get_method(data, sip_method, sizeof(sip_method)) ||
                          !memcmp(data, "SIP/2.0 ", strlen("SIP/2.0 ")))
                 {
@@ -781,12 +774,6 @@ int main(int argc, char *argv[])
                     char called[256] = "";
                     char callid[512] = "";
 
-                    // Get the Call-ID
-                    s = gettag(data, datalen, "Call-ID:", &l) ?: gettag(data, datalen, "i:", &l);
-                    memcpy(callid, s, l);
-                    callid[l] = '\0';
-                    
-                    // Get the caller and called numbers
                     data[datalen] = 0;
                     if (get_sip_peername(data, datalen, "From:", caller, sizeof(caller)))
                     {
@@ -796,6 +783,9 @@ int main(int argc, char *argv[])
                     {
                         get_sip_peername(data, datalen, "t:", called, sizeof(called));
                     }
+                    s = gettag(data, datalen, "Call-ID:", &l) ?: gettag(data, datalen, "i:", &l);
+                    memcpy(callid, s, l);
+                    callid[l] = '\0';
 
                     // Display SIP Packet Details
                     if (verbosity >= 3)
@@ -889,8 +879,8 @@ int main(int argc, char *argv[])
 
                     if (s != NULL && ((idx = ct->find_by_call_id(s, l)) < 0) 
                         && number_filter_matched 
-//                        && ip_filter_matched 
-//                        && header_filter_matched
+                        && ip_filter_matched 
+                        && header_filter_matched
                     )
                     {
                         // Add the call to the call table
@@ -973,13 +963,7 @@ int main(int argc, char *argv[])
                             {
                                 pcap_dump_flush(ct->table[idx].f_pcap);
                             }
-
-                            if (verbosity >= 3)
-                            {
-                                printf("Dumping this packet");
-                            }                            
                         }
-
                         if (header_ip->version == 4 && header_ip->frag_off == htons(0x2000))
                         { // flags == more fragments and offset == 0
                             ct->add_ipfrag((struct addr_addr_id){header_ip->saddr,
